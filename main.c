@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include "omp.h"
 
-#define DEBUG
+//#define DEBUG
 
 void Usage(char prog_name[]);
 
@@ -59,6 +59,8 @@ void Print_histo(
         int      bin_count     /* in */,
         float    min_meas      /* in */);
 
+int thread_count = 4;
+
 int main(int argc, char* argv[]) {
     int bin_count, i, bin;
     float min_meas, max_meas;
@@ -81,13 +83,38 @@ int main(int argc, char* argv[]) {
 
     /* Create bins for storing counts */
     Gen_bins(min_meas, max_meas, bin_maxes, bin_counts, bin_count);
-
+//#define usereduction
     /* Count number of values in each bin */
-#   pragma omp parallel for reduction(+:bin_counts[bin_count])
+#ifdef _OPENMP
+    #ifndef usereduction
+    #   pragma omp parallel num_threads(thread_count)
+    {
+        int *loc_bin_cts = malloc(bin_count * sizeof(int));
+    #   pragma omp for
+        for (i = 0; i < data_count; i++) {
+            bin = Which_bin(data[i], bin_maxes, bin_count, min_meas);
+            loc_bin_cts[bin]++;
+        }
+
+    #   pragma omp critical
+        for (int i = 0; i < bin_count; ++i) {
+            bin_counts[i] += loc_bin_cts[i];
+        }
+    }
+    #else
+    #pragma omp parallel for num_threads(thread_count) reduction(+:bin_counts[bin_count])
     for (i = 0; i < data_count; i++) {
         bin = Which_bin(data[i], bin_maxes, bin_count, min_meas);
         bin_counts[bin]++;
     }
+    #endif
+#else
+    for (i = 0; i < data_count; i++) {
+        bin = Which_bin(data[i], bin_maxes, bin_count, min_meas);
+        bin_counts[bin]++;
+    }
+#endif
+
 
 #  ifdef DEBUG
     printf("bin_counts = ");
@@ -276,9 +303,9 @@ void Print_histo(
     for (i = 0; i < bin_count; i++) {
         bin_max = bin_maxes[i];
         bin_min = (i == 0) ? min_meas: bin_maxes[i-1];
-        printf("%.3f-%.3f:\t", bin_min, bin_max);
-        for (j = 0; j < bin_counts[i]; j++)
-            printf("X");
-        printf("\n");
+        printf("%.3f-%.3f:\t %d\n", bin_min, bin_max, bin_counts[i]);
+//        for (j = 0; j < bin_counts[i]-10000000; j++)
+//            printf("X");
+//        printf("\n");
     }
 }  /* Print_histo */
