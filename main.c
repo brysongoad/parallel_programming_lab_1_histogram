@@ -1,3 +1,10 @@
+/* Bryson Goad
+ * Parallel Programming lab 1
+ * 4/7/18
+ * Modified from non parallel code provided with textbook
+ * Program Arguments: <bin_count> <min_meas> <max_meas> <data_count> <thread_count>
+ */
+
 /* File:      histogram.c
  * Purpose:   Build a histogram from some random data
  * 
@@ -21,9 +28,8 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <float.h>
 #include "omp.h"
-
-//#define DEBUG
 
 void Usage(char prog_name[]);
 
@@ -32,7 +38,8 @@ void Get_args(
         int*     bin_count_p   /* out */,
         float*   min_meas_p    /* out */,
         float*   max_meas_p    /* out */,
-        int*     data_count_p  /* out */);
+        int*     data_count_p  /* out */,
+        int*     thread_count  /* out */);
 
 void Gen_data(
         float   min_meas    /* in  */,
@@ -59,62 +66,54 @@ void Print_histo(
         int      bin_count     /* in */,
         float    min_meas      /* in */);
 
-int thread_count = 4;
-
 int main(int argc, char* argv[]) {
-    int bin_count, i, bin;
+    int bin_count, i, bin, thread_count;
     float min_meas, max_meas;
     float* bin_maxes;
     int* bin_counts;
     int data_count;
     float* data;
+    int **loc_bin_cts;
+    double time_start, time_end;
 
     /* Check and get command line args */
-    if (argc != 5) Usage(argv[0]);
-    Get_args(argv, &bin_count, &min_meas, &max_meas, &data_count);
+    if (argc != 6) Usage(argv[0]);
+    Get_args(argv, &bin_count, &min_meas, &max_meas, &data_count, &thread_count);
 
     /* Allocate arrays needed */
     bin_maxes = malloc(bin_count*sizeof(float));
     bin_counts = malloc(bin_count*sizeof(int));
     data = malloc(data_count*sizeof(float));
+    // 2d array for local bin counts
+    loc_bin_cts = malloc(thread_count*sizeof(int*));
+    for (int i = 0; i < thread_count; i++) {
+        loc_bin_cts[i] = malloc(bin_count*sizeof(int));
+    }
 
     /* Generate the data */
     Gen_data(min_meas, max_meas, data, data_count);
 
     /* Create bins for storing counts */
     Gen_bins(min_meas, max_meas, bin_maxes, bin_counts, bin_count);
-//#define usereduction
+
+
+    time_start = omp_get_wtime();   // start timer
+
     /* Count number of values in each bin */
-#ifdef _OPENMP
-    #ifndef usereduction
-    #   pragma omp parallel num_threads(thread_count)
-    {
-        int *loc_bin_cts = malloc(bin_count * sizeof(int));
-    #   pragma omp for
-        for (i = 0; i < data_count; i++) {
-            bin = Which_bin(data[i], bin_maxes, bin_count, min_meas);
-            loc_bin_cts[bin]++;
-        }
-
-    #   pragma omp critical
-        for (int i = 0; i < bin_count; ++i) {
-            bin_counts[i] += loc_bin_cts[i];
-        }
-    }
-    #else
-    #pragma omp parallel for num_threads(thread_count) reduction(+:bin_counts[bin_count])
+#   pragma omp parallel for num_threads(thread_count) private (i,bin) shared(loc_bin_cts)
     for (i = 0; i < data_count; i++) {
         bin = Which_bin(data[i], bin_maxes, bin_count, min_meas);
-        bin_counts[bin]++;
+        loc_bin_cts[omp_get_thread_num()][bin]++;
     }
-    #endif
-#else
-    for (i = 0; i < data_count; i++) {
-        bin = Which_bin(data[i], bin_maxes, bin_count, min_meas);
-        bin_counts[bin]++;
-    }
-#endif
 
+    time_end = omp_get_wtime();     // stop timer
+
+    // Sum the local bin counts
+    for (i = 0; i < thread_count; ++i){
+        for (bin = 0; bin < bin_count; ++bin) {
+            bin_counts[bin] += loc_bin_cts[i][bin];
+        }
+    }
 
 #  ifdef DEBUG
     printf("bin_counts = ");
@@ -125,10 +124,16 @@ int main(int argc, char* argv[]) {
 
     /* Print the histogram */
     Print_histo(bin_maxes, bin_counts, bin_count, min_meas);
+    // print parallel section time
+    printf("elapsed time: %f\n", time_end-time_start);
 
     free(data);
     free(bin_maxes);
     free(bin_counts);
+    for (int i = 0; i < thread_count; i++) {
+        free(loc_bin_cts[i]);
+    }
+    free(loc_bin_cts);
     return 0;
 
 }  /* main */
@@ -141,7 +146,7 @@ int main(int argc, char* argv[]) {
  */
 void Usage(char prog_name[] /* in */) {
     fprintf(stderr, "usage: %s ", prog_name);
-    fprintf(stderr, "<bin_count> <min_meas> <max_meas> <data_count>\n");
+    fprintf(stderr, "<bin_count> <min_meas> <max_meas> <data_count> <thread_count>\n");
     exit(0);
 }  /* Usage */
 
@@ -154,18 +159,21 @@ void Usage(char prog_name[] /* in */) {
  *            min_meas_p:    minimum measurement
  *            max_meas_p:    maximum measurement
  *            data_count_p:  number of measurements
+ *            thread_count:  number of threads
  */
 void Get_args(
         char*    argv[]        /* in  */,
         int*     bin_count_p   /* out */,
         float*   min_meas_p    /* out */,
         float*   max_meas_p    /* out */,
-        int*     data_count_p  /* out */) {
+        int*     data_count_p  /* out */,
+        int*     thread_count) /* out */{
 
     *bin_count_p = strtol(argv[1], NULL, 10);
     *min_meas_p = strtof(argv[2], NULL);
     *max_meas_p = strtof(argv[3], NULL);
     *data_count_p = strtol(argv[4], NULL, 10);
+    *thread_count = strtol(argv[5], NULL, 10);
 
 #  ifdef DEBUG
     printf("bin_count = %d\n", *bin_count_p);
@@ -303,8 +311,9 @@ void Print_histo(
     for (i = 0; i < bin_count; i++) {
         bin_max = bin_maxes[i];
         bin_min = (i == 0) ? min_meas: bin_maxes[i-1];
+        // option to print numbers to avoid filling console with giant histogram
         printf("%.3f-%.3f:\t %d\n", bin_min, bin_max, bin_counts[i]);
-//        for (j = 0; j < bin_counts[i]-10000000; j++)
+//        for (j = 0; j < bin_counts[i]; j++)
 //            printf("X");
 //        printf("\n");
     }
